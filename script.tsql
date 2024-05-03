@@ -1,0 +1,71 @@
+EXEC sp_configure 'max server memory', 1500
+RECONFIGURE
+
+ostress.exe -E -S. -Q"select * from sys.messages order by message_id option (maxdop 1)" -n200
+
+SELECT 
+    req.session_id
+	,req.wait_type
+    , req.total_elapsed_time AS duration_ms
+    , req.cpu_time AS cpu_time_ms
+    , req.total_elapsed_time - req.cpu_time AS wait_time
+    , req.logical_reads
+    , SUBSTRING (REPLACE (REPLACE (SUBSTRING (ST.text, (req.statement_start_offset/2) + 1, 
+       ((CASE statement_end_offset
+           WHEN -1
+           THEN DATALENGTH(ST.text)  
+           ELSE req.statement_end_offset
+         END - req.statement_start_offset)/2) + 1) , CHAR(10), ' '), CHAR(13), ' '), 
+      1, 512)  AS statement_text  
+FROM sys.dm_exec_requests AS req
+    CROSS APPLY sys.dm_exec_sql_text(req.sql_handle) AS ST
+ORDER BY total_elapsed_time DESC;
+
+
+SELECT 
+  pool_id
+  ,total_memory_kb
+  ,available_memory_kb
+  ,granted_memory_kb
+  ,used_memory_kb
+  ,grantee_count, waiter_count 
+  ,resource_semaphore_id
+FROM sys.dm_exec_query_resource_semaphores rs
+
+
+SELECT 
+  session_id
+  ,requested_memory_kb
+  ,granted_memory_kb
+  ,used_memory_kb
+  ,queue_id
+  ,wait_order
+  ,wait_time_ms
+  ,is_next_candidate
+  ,pool_id
+  ,text
+  ,query_plan
+FROM sys.dm_exec_query_memory_grants
+  CROSS APPLY sys.dm_exec_sql_text(sql_handle)
+  CROSS APPLY sys.dm_exec_query_plan(plan_handle)
+  
+
+SELECT TOP 20
+  SUBSTRING(ST.text, (QS.statement_start_offset/2) + 1,  
+    ((CASE statement_end_offset   
+        WHEN -1 THEN DATALENGTH(ST.text)  
+        ELSE QS.statement_end_offset END   
+            - QS.statement_start_offset)/2) + 1) AS statement_text  
+  ,CONVERT(DECIMAL (10,2), max_grant_kb /1024.0) AS max_grant_mb
+  ,CONVERT(DECIMAL (10,2), min_grant_kb /1024.0) AS min_grant_mb
+  ,CONVERT(DECIMAL (10,2), (total_grant_kb / execution_count) /1024.0) AS avg_grant_mb
+  ,CONVERT(DECIMAL (10,2), max_used_grant_kb /1024.0) AS max_grant_used_mb
+  ,CONVERT(DECIMAL (10,2), min_used_grant_kb /1024.0) AS min_grant_used_mb
+  ,CONVERT(DECIMAL (10,2), (total_used_grant_kb/ execution_count)  /1024.0) AS avg_grant_used_mb
+  ,CONVERT(DECIMAL (10,2), (total_ideal_grant_kb/ execution_count)  /1024.0) AS avg_ideal_grant_mb
+  ,CONVERT(DECIMAL (10,2), (total_ideal_grant_kb/ 1024.0)) AS total_grant_for_all_executions_mb
+  ,execution_count
+FROM sys.dm_exec_query_stats QS
+  CROSS APPLY sys.dm_exec_sql_text(QS.sql_handle) as ST
+WHERE max_grant_kb > 5120 -- greater than 5 MB
+ORDER BY max_grant_kb DESC
